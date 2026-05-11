@@ -506,13 +506,10 @@ fx_packages = [
 
 dynamo_packages = [
     "torch_tensorrt",
-<<<<<<< HEAD
     "torch_tensorrt.distributed",
     "torch_tensorrt.distributed.run",
-=======
     "torch_tensorrt.kernels",
     "torch_tensorrt.kernels._custom_plugin",
->>>>>>> 93e3c763d (feat: TorchTRT Cuda generated kernels support thru Plugin)
     "torch_tensorrt.dynamo",
     "torch_tensorrt.dynamo.backend",
     "torch_tensorrt.dynamo.conversion",
@@ -548,13 +545,10 @@ fx_package_dir = {
 
 dynamo_package_dir = {
     "torch_tensorrt": "py/torch_tensorrt",
-<<<<<<< HEAD
     "torch_tensorrt.distributed": "py/torch_tensorrt/distributed",
     "torch_tensorrt.distributed.run": "py/torch_tensorrt/distributed/run",
-=======
     "torch_tensorrt.kernels": "py/torch_tensorrt/kernels",
     "torch_tensorrt.kernels._custom_plugin": "py/torch_tensorrt/kernels/_custom_plugin",
->>>>>>> 93e3c763d (feat: TorchTRT Cuda generated kernels support thru Plugin)
     "torch_tensorrt.dynamo": "py/torch_tensorrt/dynamo",
     "torch_tensorrt.dynamo.backend": "py/torch_tensorrt/dynamo/backend",
     "torch_tensorrt.dynamo.conversion": "py/torch_tensorrt/dynamo/conversion",
