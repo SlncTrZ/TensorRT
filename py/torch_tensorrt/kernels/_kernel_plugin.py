@@ -373,12 +373,10 @@ def _make_positional_fn(
             sig_pieces.append(f"{d.name}: 'torch.Tensor'")
             annotations[d.name] = torch.Tensor
     sig_src = ", ".join(sig_pieces)
-    body = textwrap.dedent(
-        f"""
+    body = textwrap.dedent(f"""
         def _wrapper({sig_src}) -> 'torch.Tensor':
             return _fn({", ".join(param_names)})
-        """
-    )
+        """)
     ns: Dict[str, Any] = {"_fn": fn, "torch": torch}
     exec(compile(body, "<cuda_kernel_op>", "exec"), ns)
     wrapper: Callable[..., Any] = ns["_wrapper"]
@@ -596,8 +594,8 @@ def _validate_spec(spec: KernelSpec) -> None:
             )
         if decl.dtype_from is not None and decl.dtype_from not in tensor_input_names:
             raise ValueError(
-                f"OutputDecl {decl.name!r}: dtype_from={decl.dtype_from!r} is not "
-                f"a tensor input name. Known tensor inputs: {sorted(tensor_input_names)}"
+                f"OutputDecl {decl.name!r}: dtype_from={decl.dtype_from!r} is not a"
+                f" tensor input name. Known tensor inputs: {sorted(tensor_input_names)}"
             )
 
     # Extras (Numel / DimSize) only make sense against tensor inputs.
@@ -612,7 +610,7 @@ def _validate_spec(spec: KernelSpec) -> None:
     if isinstance(geom, Elementwise):
         if not geom.block or any(b <= 0 for b in geom.block):
             raise ValueError(
-                f"Elementwise.block must be a non-empty tuple of positive ints, "
+                "Elementwise.block must be a non-empty tuple of positive ints, "
                 f"got {geom.block!r}"
             )
         if geom.layout not in ("flat", "nd"):
@@ -621,7 +619,7 @@ def _validate_spec(spec: KernelSpec) -> None:
             )
         if geom.layout == "flat" and len(geom.block) != 1:
             raise ValueError(
-                f"Elementwise(layout='flat') requires block of length 1, got "
+                "Elementwise(layout='flat') requires block of length 1, got "
                 f"block={geom.block!r}"
             )
         if len(geom.block) > 3:

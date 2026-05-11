@@ -62,7 +62,8 @@ def _unwrap_scalar_attr(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         if value.size != 1:
             raise ValueError(
-                f"Expected scalar plugin attribute, got ndarray with shape {value.shape}"
+                "Expected scalar plugin attribute, got ndarray with shape"
+                f" {value.shape}"
             )
         return value.reshape(()).item()
     if isinstance(value, np.generic):
@@ -85,7 +86,8 @@ def _generate_plugin_converter(
 
     except ImportError as e:
         raise RuntimeError(
-            "Unable to import TensorRT plugin. TensorRT version must be 10.7.0 or higher to support for Triton based TensorRT plugins"
+            "Unable to import TensorRT plugin. TensorRT version must be 10.7.0 or"
+            " higher to support for Triton based TensorRT plugins"
         )
     from tensorrt.plugin._lib import QDP_REGISTRY
 
@@ -93,9 +95,10 @@ def _generate_plugin_converter(
     overload_str = overload if overload else ""
     overload_name = overload_str if overload else "default"
     torch_overload = getattr(torch_target, overload_name)
-    assert (
-        f"{namespace}::{op_name}" in QDP_REGISTRY
-    ), f"Could not find a tensorrt plugin registered for op {namespace}::{op_name}, unable to generate converter"
+    assert f"{namespace}::{op_name}" in QDP_REGISTRY, (
+        f"Could not find a tensorrt plugin registered for op {namespace}::{op_name},"
+        " unable to generate converter"
+    )
     torch_schema = torch_target._schemas[overload_str]
 
     use_aot_plugin = use_aot_if_available
@@ -105,7 +108,8 @@ def _generate_plugin_converter(
         if desc.aot_impl_func is None:
             use_aot_plugin = False
             _LOGGER.debug(
-                f"AOT impl func not found for {namespace}::{op_name}, use JIT plugin instead"
+                f"AOT impl func not found for {namespace}::{op_name}, use JIT plugin"
+                " instead"
             )
 
     def custom_kernel_converter(
@@ -164,9 +168,10 @@ def _generate_plugin_converter(
         supports_dynamic_shapes=supports_dynamic_shapes,
         requires_output_allocator=requires_output_allocator,
     )(custom_kernel_converter)
-    assert (
-        torch_overload in DYNAMO_CONVERTERS
-    ), f"Generated dynamo converter for {namespace}::{op_name} did not get properly registered in the converter registry"
+    assert torch_overload in DYNAMO_CONVERTERS, (
+        f"Generated dynamo converter for {namespace}::{op_name} did not get properly"
+        " registered in the converter registry"
+    )
     return custom_kernel_converter
 
 

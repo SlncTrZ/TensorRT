@@ -35,7 +35,8 @@ def _scalar_attr_to_python(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         if value.size != 1:
             raise ValueError(
-                f"Expected scalar plugin attribute, got ndarray with shape {value.shape}"
+                "Expected scalar plugin attribute, got ndarray with shape"
+                f" {value.shape}"
             )
         return value.reshape(()).item()
     if isinstance(value, np.generic):
@@ -62,7 +63,8 @@ def _generate_plugin(plugin_name: str) -> None:
         import tensorrt.plugin as trtp
     except ImportError as e:
         raise RuntimeError(
-            "Unable to import TensorRT plugin. TensorRT version must be 10.7.0 or higher to support for Triton based TensorRT plugins"
+            "Unable to import TensorRT plugin. TensorRT version must be 10.7.0 or"
+            " higher to support for Triton based TensorRT plugins"
         )
 
     namespace, name = plugin_name.split("::")
