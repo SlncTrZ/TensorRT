@@ -38,7 +38,9 @@ def _coerce_scalar_plugin_attr(value: Any, arg_type: torch._C.Type) -> Any:
 def _coerce_plugin_attr_for_qdp(value: Any, attr_annotation: Any) -> Any:
     """Convert Python scalars to the serialized type expected by QDP."""
     if _is_numpy_attr_annotation(attr_annotation):
-        return np.asarray(_unwrap_scalar_attr(value), dtype=_numpy_attr_dtype(attr_annotation))
+        return np.asarray(
+            _unwrap_scalar_attr(value), dtype=_numpy_attr_dtype(attr_annotation)
+        )
     return value
 
 

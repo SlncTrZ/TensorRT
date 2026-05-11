@@ -715,6 +715,4 @@ def cuda_kernel_op(
             isinstance(input_spec, ScalarInput) for input_spec in spec.inputs
         ),
     )
-    _LOGGER.info(
-        "cuda_kernel_op '%s' registered (schema: %s)", op_name, schema
-    )
+    _LOGGER.info("cuda_kernel_op '%s' registered (schema: %s)", op_name, schema)
