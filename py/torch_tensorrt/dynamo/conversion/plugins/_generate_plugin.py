@@ -1,16 +1,46 @@
 import itertools
 import logging
+import re
 from types import FunctionType
 from typing import Any, Callable, Tuple
 
+import numpy as np
+import numpy.typing as npt
+import sympy
 import torch
 from sympy import lambdify
 from torch._dynamo.source import LocalSource
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.symbolic_shapes import DimDynamic, ShapeEnv
+
 from torch_tensorrt._features import needs_qdp_plugin
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+
+_TORCH_SCHEMA_TYPE_TO_PLUGIN_ATTR_TYPE = {
+    "float": npt.NDArray[np.float64],
+    "int": npt.NDArray[np.int64],
+    "bool": npt.NDArray[np.bool_],
+}
+
+
+def _identifier_from_plugin_name(plugin_name: str) -> str:
+    """Return a valid Python identifier fragment for generated plugin functions."""
+    return re.sub(r"\W|^(?=\d)", "_", plugin_name)
+
+
+def _scalar_attr_to_python(value: Any) -> Any:
+    """Convert QDP scalar-attribute arrays back to Python scalars."""
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            raise ValueError(
+                f"Expected scalar plugin attribute, got ndarray with shape {value.shape}"
+            )
+        return value.reshape(()).item()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def mksym(
@@ -68,14 +98,20 @@ def _generate_plugin(plugin_name: str) -> None:
                 register_func_annotation[arg.name] = trtp.TensorDesc
                 impl_func_annotation[arg.name] = trtp.Tensor
             elif arg.type.isSubtypeOf(torch._C.FloatType.get()):
-                register_func_annotation[arg.name] = float
-                impl_func_annotation[arg.name] = float
+                register_func_annotation[arg.name] = (
+                    _TORCH_SCHEMA_TYPE_TO_PLUGIN_ATTR_TYPE["float"]
+                )
+                impl_func_annotation[arg.name] = register_func_annotation[arg.name]
             elif arg.type.isSubtypeOf(torch._C.IntType.get()):
-                register_func_annotation[arg.name] = int
-                impl_func_annotation[arg.name] = int
+                register_func_annotation[arg.name] = (
+                    _TORCH_SCHEMA_TYPE_TO_PLUGIN_ATTR_TYPE["int"]
+                )
+                impl_func_annotation[arg.name] = register_func_annotation[arg.name]
             elif arg.type.isSubtypeOf(torch._C.BoolType.get()):
-                register_func_annotation[arg.name] = bool
-                impl_func_annotation[arg.name] = bool
+                register_func_annotation[arg.name] = (
+                    _TORCH_SCHEMA_TYPE_TO_PLUGIN_ATTR_TYPE["bool"]
+                )
+                impl_func_annotation[arg.name] = register_func_annotation[arg.name]
             elif arg.type.isSubtypeOf(torch._C.StringType.get()):
                 register_func_annotation[arg.name] = str
                 impl_func_annotation[arg.name] = str
@@ -118,6 +154,12 @@ def _generate_plugin(plugin_name: str) -> None:
         shape_env = ShapeEnv()
         syms_args = []
         tensor_args = [elem for elem in args if isinstance(elem, trtp.TensorDesc)]
+        non_tensor_args = [
+            _scalar_attr_to_python(elem)
+            for elem in args
+            if not isinstance(elem, trtp.TensorDesc)
+        ]
+        torch_kwargs = {k: _scalar_attr_to_python(v) for k, v in kwargs.items()}
 
         for tensor_arg in tensor_args:
             sample = {f"{i}": 5 for i in range(tensor_arg.ndim)}
@@ -133,50 +175,78 @@ def _generate_plugin(plugin_name: str) -> None:
                 fake_arg = torch.randn(syms_arg)
                 fake_args.append(fake_arg)
 
-            output = torch_op(*fake_args, **kwargs)
+            output = torch_op(*fake_args, *non_tensor_args, **torch_kwargs)
 
-        # We assume that number of dimensions are the same in torch op
         shape_calc_fns = [None] * output.ndim
 
-        for i in range(output.ndim):
-            input_node_expr = list(
-                itertools.chain.from_iterable(
-                    [sym.node.expr for sym in syms_arg] for syms_arg in syms_args
-                )
+        input_node_expr = list(
+            itertools.chain.from_iterable(
+                [sym.node.expr for sym in syms_arg] for syms_arg in syms_args
             )
+        )
+        # TODO(upstream-torch): torch's ShapeEnv.create_symbol(source=...)
+        # produces sympy.Symbol names derived from the source (e.g. ``L['0']``
+        # for ``LocalSource('0')``), which are not valid Python identifiers.
+        # ``sympy.lambdify`` pastes arg names verbatim into the generated
+        # ``def`` body, so without this substitution we'd emit
+        # ``lambda L['0']: ...`` — a SyntaxError. Renaming to ``_a0, _a1, ...``
+        # before lambdifying sidesteps the issue.
+        #
+        # File against pytorch/pytorch (torch.fx.experimental.symbolic_shapes).
+        # Once ShapeEnv produces identifier-safe symbol names, the substitution
+        # can be removed and ``input_node_expr`` passed straight to lambdify.
+        # Tracking issue: <ADD PYTORCH ISSUE URL>.
+        clean_args = [sympy.Symbol(f"_a{j}") for j in range(len(input_node_expr))]
+        subs_map = dict(zip(input_node_expr, clean_args))
 
-            shape_calc_fns[i] = lambdify(
-                tuple(input_node_expr), output.shape[i].node.expr, "math"
-            )
+        for i in range(output.ndim):
+            out_dim = output.shape[i]
+            if hasattr(out_dim, "node"):
+                if out_dim.node.expr is None:
+                    raise ValueError(f"output.shape[{i}].node.expr cannot be None")
+                out_expr = out_dim.node.expr.subs(subs_map)
+            else:
+                out_expr = sympy.Integer(int(out_dim))
+            shape_calc_fns[i] = lambdify(tuple(clean_args), out_expr, "math")
 
         out_desc = tensor_args[0].like()
-        for i in range(out_desc.ndim):
-            input_shape_expr = list(
-                itertools.chain.from_iterable(arg.shape_expr for arg in tensor_args)
-            )
-
-            if output.shape[i].node.expr is None:
-                raise ValueError(f"output.shape[{i}].node.expr cannot be None")
-            out_desc.shape_expr[i] = shape_calc_fns[i](*input_shape_expr)  # type: ignore[misc]
+        input_shape_expr = list(
+            itertools.chain.from_iterable(arg.shape_expr for arg in tensor_args)
+        )
+        # ``TensorDesc.like()`` keeps the input rank, which is wrong for
+        # shape-changing ops such as reductions. Use the meta output rank.
+        new_shape_expr = trtp.ShapeExprs(output.ndim)
+        for i in range(output.ndim):
+            new_shape_expr[i] = shape_calc_fns[i](*input_shape_expr)  # type: ignore[misc]
+        out_desc.shape_expr = new_shape_expr
 
         return (out_desc,)
+
+    plugin_name_fragment = _identifier_from_plugin_name(plugin_name)
+    desc_func_name = f"add_plugin_desc_{plugin_name_fragment}"
+    impl_func_name = f"add_plugin_impl_{plugin_name_fragment}"
+    plugin_signature = plugin_signature.replace("add_plugin_desc", desc_func_name, 1)
+    plugin_impl_signature = plugin_impl_signature.replace(
+        "add_plugin_impl", impl_func_name, 1
+    )
 
     codegen_plugin = f"""
 {plugin_signature}
     return _generic_plugin_desc({input_signature})
     """
 
-    _LOGGER.warning(f"Plugin registration function: \n{codegen_plugin}")
-
     plugin_code = compile(codegen_plugin, "<string>", "exec")
 
-    globals()["_generic_plugin_desc"] = _generic_plugin_desc
+    # Keep each generated descriptor bound to its own closure. A shared module
+    # global lets later plugin registrations overwrite earlier descriptors.
+    plugin_desc_globals = {**globals(), "_generic_plugin_desc": _generic_plugin_desc}
 
     plugin = FunctionType(
         plugin_code.co_consts[0],
-        globals(),
-        "plugin",
+        plugin_desc_globals,
+        desc_func_name,
     )
+    plugin.__qualname__ = desc_func_name
 
     # Function annotation is required for dynamic function to work in TensorRT.Plugin
     plugin.__annotations__ = register_func_annotation
@@ -188,13 +258,15 @@ def _generate_plugin(plugin_name: str) -> None:
     ) -> None:
         tensor_args = [elem for elem in args if isinstance(elem, trtp.Tensor)]
         non_tensor_args = [elem for elem in args if not isinstance(elem, trtp.Tensor)]
+        non_tensor_args = [_scalar_attr_to_python(v) for v in non_tensor_args]
+        torch_kwargs = {k: _scalar_attr_to_python(v) for k, v in kwargs.items()}
         in_tensors = [torch.as_tensor(i, device="cuda") for i in tensor_args]
 
         dest_tensors = [torch.as_tensor(o, device="cuda") for o in outputs]
 
         stream = torch.cuda.ExternalStream(stream)
         with torch.cuda.stream(stream):
-            out_tensors = torch_op(*in_tensors, *non_tensor_args, **kwargs)
+            out_tensors = torch_op(*in_tensors, *non_tensor_args, **torch_kwargs)
             if isinstance(out_tensors, torch.Tensor):
                 out_tensors = (out_tensors,)
             [d.copy_(o) for (d, o) in zip(dest_tensors, out_tensors)]
@@ -203,8 +275,6 @@ def _generate_plugin(plugin_name: str) -> None:
 {plugin_impl_signature}
     _generic_plugin_impl(outputs, stream, {input_signature})
     """
-
-    _LOGGER.warning(f"Plugin implementation function: \n{plugin_impl_func}")
 
     plugin_impl_code = compile(plugin_impl_func, "<string>", "exec")
 
@@ -215,8 +285,9 @@ def _generate_plugin(plugin_name: str) -> None:
     plugin_globals = {**globals(), "_generic_plugin_impl": _generic_plugin_impl}
 
     plugin_impl = FunctionType(
-        plugin_impl_code.co_consts[0], plugin_globals, "plugin_impl"
+        plugin_impl_code.co_consts[0], plugin_globals, impl_func_name
     )
+    plugin_impl.__qualname__ = impl_func_name
 
     plugin_impl.__annotations__ = impl_func_annotation
 

@@ -457,6 +457,7 @@ jobs:
                 python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/l2_dynamo_compile_llm_tests_results.xml llm/
                 popd
 
+<<<<<<< HEAD
     L2-dynamo-core-tests:
         name: ${{ matrix.display-name }}
         needs:
@@ -495,6 +496,46 @@ jobs:
                 python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/l2_dynamo_core_tests_results.xml  -k "not test_000_ and not test_001_" runtime/*
                 python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/l2_dynamo_executorch_tests_results.xml executorch/
                 popd
+=======
+  L2-dynamo-plugin-tests:
+    name: ${{ matrix.display-name }}
+    needs: [filter-matrix, build, L1-dynamo-core-tests, L1-dynamo-compile-tests, L1-torch-compile-tests, L1-torchscript-tests]
+    if: ${{ (github.ref_name == 'main' || github.ref_name == 'nightly' || contains(github.event.pull_request.labels.*.name, 'Force All Tests[L0+L1+L2]')) && always() || success() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repository: pytorch/tensorrt
+            package-name: torch_tensorrt
+            pre-script: packaging/pre_build_script.sh
+            post-script: packaging/post_build_script.sh
+            smoke-test-script: packaging/smoke_test_script.sh
+            display-name: L2 dynamo plugin tests
+    uses: ./.github/workflows/linux-test.yml
+    with:
+      job-name: L2-dynamo-plugin-tests
+      repository: "pytorch/tensorrt"
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      build-matrix: ${{ needs.filter-matrix.outputs.matrix }}
+      pre-script: ${{ matrix.pre-script }}
+      script: |
+        set -euo pipefail
+        pushd .
+        cd tests/py/dynamo
+        python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/dynamo_converters_test_results.xml -n 4 conversion/
+        python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/dynamo_converters_test_results.xml automatic_plugin/test_automatic_plugin.py
+        python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/dynamo_converters_test_results.xml automatic_plugin/test_automatic_plugin_with_attrs.py
+        python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/dynamo_converters_test_results.xml automatic_plugin/test_flashinfer_rmsnorm.py
+        popd
+        pushd .
+        # cuda-python is an optional runtime dep for the torch_tensorrt.kernels QDP layer.
+        python -m pip install cuda-python
+        cd tests/py/kernels
+        python -m pytest -ra --junitxml=${RUNNER_TEST_RESULTS_DIR}/dynamo_kernels_test_results.xml .
+        popd
+>>>>>>> 93e3c763d (feat: TorchTRT Cuda generated kernels support thru Plugin)
 
     L2-dynamo-plugin-tests:
         name: ${{ matrix.display-name }}

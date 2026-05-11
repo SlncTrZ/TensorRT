@@ -1,11 +1,13 @@
 import logging
+import typing
 import uuid
-from typing import Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import tensorrt as trt
 import torch
 from torch.fx.node import Argument, Node, Target
+
 from torch_tensorrt._features import needs_qdp_plugin
 from torch_tensorrt.dynamo._settings import CompilationSettings
 from torch_tensorrt.dynamo.conversion._ConversionContext import ConversionContext
@@ -18,6 +20,52 @@ from torch_tensorrt.dynamo.conversion._ConverterRegistry import (
 from torch_tensorrt.dynamo.conversion.converter_utils import get_trt_tensor
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+
+def _coerce_scalar_plugin_attr(value: Any, arg_type: torch._C.Type) -> Any:
+    """Convert FX/Numpy scalar constants to Python values for QDP attributes."""
+    if arg_type.isSubtypeOf(torch._C.FloatType.get()):
+        return float(_unwrap_scalar_attr(value))
+    if arg_type.isSubtypeOf(torch._C.IntType.get()):
+        return int(_unwrap_scalar_attr(value))
+    if arg_type.isSubtypeOf(torch._C.BoolType.get()):
+        return bool(_unwrap_scalar_attr(value))
+    if arg_type.isSubtypeOf(torch._C.StringType.get()):
+        return str(_unwrap_scalar_attr(value))
+    return value
+
+
+def _coerce_plugin_attr_for_qdp(value: Any, attr_annotation: Any) -> Any:
+    """Convert Python scalars to the serialized type expected by QDP."""
+    if _is_numpy_attr_annotation(attr_annotation):
+        return np.asarray(_unwrap_scalar_attr(value), dtype=_numpy_attr_dtype(attr_annotation))
+    return value
+
+
+def _is_numpy_attr_annotation(annotation: Any) -> bool:
+    return annotation is np.ndarray or typing.get_origin(annotation) is np.ndarray
+
+
+def _numpy_attr_dtype(annotation: Any) -> np.dtype:
+    if annotation is np.ndarray:
+        return np.dtype(object)
+    dtype_arg = typing.get_args(annotation)[1]
+    dtype_args = typing.get_args(dtype_arg)
+    if not dtype_args:
+        raise TypeError(f"Could not infer NumPy dtype from annotation {annotation!r}")
+    return np.dtype(dtype_args[0])
+
+
+def _unwrap_scalar_attr(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            raise ValueError(
+                f"Expected scalar plugin attribute, got ndarray with shape {value.shape}"
+            )
+        return value.reshape(()).item()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def _generate_plugin_converter(
@@ -92,9 +140,12 @@ def _generate_plugin_converter(
         # Update kwargs with non_tensor_kwargs, adding new keys or overwriting existing ones
         kwargs.update(non_tensor_kwargs)
 
-        for k, v in kwargs.items():
+        arg_types = {arg.name: arg.type for arg in torch_schema.arguments}
+        for k, v in list(kwargs.items()):
             if isinstance(v, torch.fx.immutable_collections.immutable_list):
                 kwargs[k] = np.array(v)
+            kwargs[k] = _coerce_scalar_plugin_attr(kwargs[k], arg_types[k])
+            kwargs[k] = _coerce_plugin_attr_for_qdp(kwargs[k], non_tensor_inputs[k])
 
         layer = ctx.net.add_plugin(plugin(*itensor_args, **kwargs), aot=use_aot_plugin)
         assert layer, f"{namespace}::{name} plugin layer was not able to be created"
